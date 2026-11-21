@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab_only_password
+      POSTGRES_DB: latency_lab
+    ports: ["55433:5432"]
+    volumes:
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+      - pg_latency_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab -d latency_lab"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin_lab_only
+    ports: ["8080:8080"]
+    volumes:
+      - ./keycloak/realm.json:/opt/keycloak/data/import/realm.json:ro
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://lab:lab_only_password@postgres:5432/latency_lab
+      JWT_ISSUER: http://localhost:8080/realms/production-warfare
+      JWKS_URL: http://keycloak:8080/realms/production-warfare/protocol/openid-connect/certs
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      keycloak: {condition: service_started}
+volumes:
+  pg_latency_data:
