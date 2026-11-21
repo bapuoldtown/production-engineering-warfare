@@ -4,6 +4,108 @@
 >
 > An API can be slow even when PostgreSQL executes the SQL in less than a millisecond. This lab teaches how to find the *actual* bottleneck, and what to do when a healthy database is overwhelmed by callers.
 
+## Run the entire lab yourself (Docker Compose)
+
+The repository now includes a **standalone learning implementation** of the same architecture. It is not a byte-for-byte copy of the original local WSL/kind source. The benchmark figures above are from our earlier hands-on session, **not** results of this newly packaged implementation.
+
+**Requirements:** Docker Desktop with Compose, Python 3.10+ for the host load generator, and free ports **8000**, **8080**, **55433**. Demo credentials in the checked-in realm and Compose file are intentionally insecure: **local practice only**, never expose this stack to a public network or reuse these secrets.
+
+```powershell
+git clone https://github.com/bapuoldtown/production-engineering-warfare.git
+cd production-engineering-warfare/labs/002-postgresql-latency
+docker compose up -d --build
+docker compose ps
+```
+
+On first startup PostgreSQL seeds **500,000 orders**. Keycloak imports the `production-warfare` realm, confidential `orders-api` client, service account, and audience mapper automatically. Keycloak may take a little time to start. If it is not ready, retry the token request below.
+
+### 1. Obtain a real machine-to-machine token
+
+In PowerShell:
+
+```powershell
+$tokenResponse = Invoke-RestMethod -Method Post -Uri "http://localhost:8080/realms/production-warfare/protocol/openid-connect/token" -ContentType "application/x-www-form-urlencoded" -Body @{grant_type="client_credentials";client_id="orders-api";client_secret="lab_client_secret_only"}
+$token = $tokenResponse.access_token
+Invoke-RestMethod -Uri "http://localhost:8000/orders?customer_id=420&mode=unpooled" -Headers @{Authorization="Bearer $token"}
+```
+
+Expected: JSON with 20 orders and measured connection/query timings. Try calling `/orders` **without** a bearer token: expected HTTP **401**. The FastAPI server checks JWT signature, issuer, audience and expiry using Keycloak's JWKS. The load generator obtains its own token; no manual copy/paste required.
+
+### 2. Find the SQL bottleneck before adding an index
+
+```powershell
+docker compose exec postgres psql -U lab -d latency_lab -c "EXPLAIN (ANALYZE, BUFFERS) SELECT id, customer_id, created_at FROM orders WHERE customer_id=420 ORDER BY created_at DESC LIMIT 20;"
+```
+
+Observe the plan. Now add the composite index:
+
+```powershell
+Get-Content sql/create_index.sql | docker compose exec -T postgres psql -U lab -d latency_lab
+docker compose exec postgres psql -U lab -d latency_lab -c "EXPLAIN (ANALYZE, BUFFERS) SELECT id, customer_id, created_at FROM orders WHERE customer_id=420 ORDER BY created_at DESC LIMIT 20;"
+```
+
+Compare plan and execution time; your measurements will differ from our original ~25 ms versus ~0.14 ms result.
+
+### 3. Compare fresh connections against connection pooling
+
+Use the token from step 1:
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/orders?mode=unpooled" -Headers @{Authorization="Bearer $token"} | Select-Object -ExpandProperty timing_ms
+Invoke-RestMethod -Uri "http://localhost:8000/orders?mode=pooled" -Headers @{Authorization="Bearer $token"} | Select-Object -ExpandProperty timing_ms
+```
+
+Repeat several times. The pooled mode reuses a **2–5 connection** Psycopg pool; unpooled opens a new connection per request. Both use the same indexed SQL query.
+
+### 4. Deliberately exhaust the pool with concurrent traffic
+
+Install the standalone host client dependency:
+
+```powershell
+python -m pip install httpx
+python client/load_test.py
+```
+
+Defaults: **200 requests**, **200 concurrent callers**, **500 ms hold** of each acquired connection, `mode=pooled`. The load script requests a Keycloak access token automatically and reports response counts plus p50/p95/p99 across all responses and successful-only p95.
+
+The API returns **503 + Retry-After: 2** for pool checkout timeouts rather than accidental 500 errors. This demonstrates controlled overload **not** increased capacity. Results depend on host CPU, Docker resources and client scheduling.
+
+For a baseline without fault injection:
+
+```powershell
+$env:HOLD_MS="0"
+python client/load_test.py
+Remove-Item Env:HOLD_MS
+```
+
+For fresh-connection comparison:
+
+```powershell
+$env:MODE="unpooled"
+$env:REQUESTS="20"
+$env:CONCURRENCY="5"
+$env:HOLD_MS="0"
+python client/load_test.py
+Remove-Item Env:MODE,Env:REQUESTS,Env:CONCURRENCY,Env:HOLD_MS
+```
+
+Do **not** run 200 simultaneous unpooled connections against a real database.
+
+### 5. Inspect, troubleshoot and clean up
+
+```powershell
+docker compose logs -f api
+docker compose logs --tail=100 keycloak
+docker compose exec postgres psql -U lab -d latency_lab -c "SELECT count(*) FROM orders;"
+docker compose down
+```
+
+`docker compose down` preserves the PostgreSQL volume. For a full reset of **this lab only**, `docker compose down -v` deletes its database volume, then `docker compose up -d --build` reseeds it.
+
+**Challenge for readers:** implement a nonblocking admission-control semaphore ahead of pool acquisition, then rerun the exact same load test and compare successful-request p95, rejection rate and resource usage. We have **not** benchmarked that enhancement.
+
+---
+
 ## The production incident
 
 A FastAPI `GET /orders` endpoint queries 500,000 PostgreSQL order records by customer ID, returning the newest 20. The endpoint uses Keycloak OAuth2 client credentials for machine-to-machine authentication. At first, every request establishes a new PostgreSQL connection. Later, 200 simultaneous callers compete for a pool of just five connections.
