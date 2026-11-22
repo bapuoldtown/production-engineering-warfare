@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slow-start
+  namespace: warfare-006
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: slow-start
+  template:
+    metadata:
+      labels:
+        app: slow-start
+    spec:
+      containers:
+        - name: api
+          image: warfare-006:v1
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          env:
+            - name: STARTUP_SECONDS
+              value: "45"
+          startupProbe:
+            httpGet:
+              path: /live
+              port: 8000
+            periodSeconds: 5
+            failureThreshold: 15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 8000
+            periodSeconds: 10
+            failureThreshold: 3
