@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: warfare-rollout-lab
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rollout-api
+  namespace: warfare-rollout-lab
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  progressDeadlineSeconds: 60
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: rollout-api
+  template:
+    metadata:
+      labels:
+        app: rollout-api
+        version: v1
+    spec:
+      containers:
+        - name: api
+          image: python:3.12-slim
+          command:
+            - python
+            - -u
+            - -c
+            - |
+              from http.server import BaseHTTPRequestHandler, HTTPServer
+              import time
+              started = time.monotonic()
+              class Handler(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      if self.path == "/ready":
+                          status = 200 if time.monotonic() - started >= 5 else 503
+                          body = b"ready" if status == 200 else b"warming up"
+                      else:
+                          status = 200
+                          body = b"Hello from V1"
+                      self.send_response(status)
+                      self.end_headers()
+                      self.wfile.write(body)
+              HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 2
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rollout-api
+  namespace: warfare-rollout-lab
+spec:
+  selector:
+    app: rollout-api
+  ports:
+    - port: 80
+      targetPort: 8080
