@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: warfare-oom-lab
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-warrior
+  namespace: warfare-oom-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oom-warrior
+  template:
+    metadata:
+      labels:
+        app: oom-warrior
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: oom-warrior
+          image: python:3.12-slim
+          command:
+            - python
+            - -u
+            - -c
+            - |
+              import time
+
+              memory = []
+              while True:
+                  memory.append(bytearray(10 * 1024 * 1024))
+                  print(f"Allocated {len(memory) * 10} MiB", flush=True)
+                  time.sleep(0.5)
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 80Mi
