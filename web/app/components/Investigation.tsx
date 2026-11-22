@@ -1,0 +1,28 @@
+"use client";
+import {useState} from "react";
+type Command="get pods"|"describe pod"|"logs --previous"|"get events";
+const observations:Record<Command,string>={
+"get pods":"NAME           READY   STATUS             RESTARTS\nslow-api-7c8   0/1     CrashLoopBackOff   4",
+"describe pod":"Liveness: http-get :8000/health\nWarning Unhealthy: Liveness probe failed: connection refused\nNormal Killing: Container failed liveness probe, will be restarted",
+"logs --previous":"[00:00] Booting slow-api...\n[00:10] Loading application dependencies...\n[00:20] Still initializing...\n[terminated before HTTP server started]",
+"get events":"Warning Unhealthy: Liveness probe failed\nNormal Killing: Container failed liveness probe\nWarning BackOff: Back-off restarting failed container"
+};
+const options=[{id:"A",text:"The readiness probe kills containers when the HTTP endpoint is unavailable."},{id:"B",text:"The liveness probe restarts the container before initialization finishes."},{id:"C",text:"Kubernetes requires all applications to start within 30 seconds."},{id:"D",text:"The Service cannot find a matching EndpointSlice."}];
+export default function Investigation(){
+ const [phase,setPhase]=useState<"investigate"|"diagnose"|"repair">("investigate");
+ const [history,setHistory]=useState<Command[]>([]);
+ const [answer,setAnswer]=useState("");
+ const [submitted,setSubmitted]=useState(false);
+ const [startup,setStartup]=useState(false);
+ const [verified,setVerified]=useState(false);
+ const run=(c:Command)=>setHistory(h=>[...h,c]);
+ const reset=()=>{setPhase("investigate");setHistory([]);setAnswer("");setSubmitted(false);setStartup(false);setVerified(false)};
+ return <section className="investigation">
+ <div className="eyebrow">MISSION 006 · INCIDENT INVESTIGATION</div><h2>You are on call. The API is restarting.</h2><p>Production alert: <strong>slow-api has 0 available replicas.</strong> The Python service needs 45 seconds to initialize. Your job is to investigate, diagnose, and recover it.</p>
+ <div className="inv-steps"><span className={phase==="investigate"?"active":""}>1. Investigate</span><span className={phase==="diagnose"?"active":""}>2. Diagnose</span><span className={phase==="repair"?"active":""}>3. Recover</span></div>
+ {phase==="investigate"&&<><p>Choose the Kubernetes evidence you want to inspect. Commands reveal simulated output, not data from your cluster.</p><div className="inv-commands">{(Object.keys(observations) as Command[]).map(c=><button key={c} type="button" onClick={()=>run(c)}>kubectl {c}</button>)}</div><div className="inv-terminal" role="log" aria-label="Simulated kubectl terminal"><span>$ kubectl --context kind-prod-sim -n warfare-006 ...</span>{history.length===0?<p>Choose a command above to inspect the incident.</p>:history.map((c,i)=><div key={i}><strong>$ kubectl {c}</strong><pre>{observations[c]}</pre></div>)}</div><button className="inv-primary" type="button" disabled={history.length===0} onClick={()=>setPhase("diagnose")}>Form a diagnosis →</button></>}
+ {phase==="diagnose"&&<><h3>What is the most likely root cause?</h3><fieldset className="inv-answers"><legend>Choose one answer. The result stays hidden until submission.</legend>{options.map(o=><label key={o.id}><input type="radio" name="root-cause" checked={answer===o.id} onChange={()=>{setAnswer(o.id);setSubmitted(false)}}/><span>{o.id}. {o.text}</span></label>)}</fieldset>{!submitted?<button className="inv-primary" type="button" disabled={!answer} onClick={()=>setSubmitted(true)}>Submit diagnosis</button>:<div className="inv-feedback" role="status"><strong>{answer==="B"?"Correct diagnosis.":"Not quite. Revisit the liveness probe evidence."}</strong><p>A failing liveness probe can cause kubelet to restart a container. Readiness alone does not restart containers. A startup probe delays liveness and readiness checks until startup succeeds.</p>{answer==="B"?<button className="inv-primary" type="button" onClick={()=>setPhase("repair")}>Apply recovery strategy →</button>:<button type="button" onClick={()=>{setPhase("investigate");setSubmitted(false)}}>Inspect evidence again</button>}</div>}</>}
+ {phase==="repair"&&<><h3>Choose a safer probe configuration</h3><label className="inv-fix"><input type="checkbox" checked={startup} onChange={e=>{setStartup(e.target.checked);setVerified(false)}}/> Add a startup probe with a failure budget longer than 45 seconds</label><p>Keep readiness responsible for traffic eligibility, and liveness responsible for detecting a stuck process after startup.</p><button className="inv-primary" type="button" onClick={()=>setVerified(true)}>Simulate rollout and verify</button>{verified&&<div className="inv-feedback" role="status"><strong>{startup?"✓ Simulation recovered":"✕ Restart loop persists"}</strong><pre>{startup?"startupProbe: success after initialization\nreadinessProbe: healthy\nlivenessProbe: healthy\nREADY 1/1 | RESTARTS 0":"Liveness probe still fires too early.\nContainer restarts before initialization completes."}</pre>{startup&&<p>Now reproduce the fix in your local kind cluster and record actual logs and events in EVIDENCE.md.</p>}</div>}</>}
+ <div className="inv-bottom"><button type="button" onClick={reset}>↻ Reset incident</button><a href="https://github.com/bapuoldtown/production-engineering-warfare/tree/main/labs/006-crashloop-startup-probes" target="_blank" rel="noopener noreferrer">Open local Mission 006 lab ↗</a></div><p className="inv-disclaimer">Educational simulation: terminal output and recovery are illustrative, not actual cluster measurements. Real probe thresholds and timing depend on the deployment configuration.</p>
+ </section>
+}
