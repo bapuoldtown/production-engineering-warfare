@@ -1,42 +1,45 @@
-# Mission 007 — Node Failure Recovery
+# Mission 007 — Kubernetes Node Placement, Stuck Rollouts & Failure Recovery
 
-**Goal:** Learn how node placement, Service endpoints, node failure detection, and eventual Pod replacement affect availability. Use a local `kind-prod-sim` cluster; do not stop any worker until the baseline and recovery plan are documented.
+> **Evidence status (22 Nov 2026):** The topology-spread scheduling failure has been reproduced and its root cause verified with a controlled standalone Pod. **Actual worker-node shutdown, recovery timing, PDB behavior, and final Deployment rollout verification have not been captured in this record.** Do not label those experiments complete without evidence.
 
-## Experiment A — Baseline, no placement constraints
+## The production story
+
+You operate a three-replica API on a local kind cluster with **one tainted control-plane node and three untainted workers**. Initially all three API Pods are Ready, one per worker. You add a seemingly safe `topologySpreadConstraints` policy to prevent concentration on a single worker. The rolling update stalls: old Pods keep serving, but a new Pod cannot schedule.
+
+**Engineering question:** Why does a policy allowing `maxSkew: 1` reject a fourth Pod that seems to yield 2–1–1 across three workers?
+
+## Prerequisites and safety
+
+- Windows PowerShell; Docker Desktop; `kubectl`; `kind-prod-sim` context; three workers.
+- Run from the directory containing `manifests/`. Check context before applying: `kubectl config current-context`.
+- These manifests all target the **same** Deployment, not separate Deployments. Do not use them in a production cluster.
+- Diagnostic Pods with `app: resilient-api` **also match the Service selector**, so they may receive requests. Do not direct important traffic to the Service during diagnostics.
+- Avoid `git add .` unless `git rev-parse --show-toplevel` confirms you are inside the intended repository.
+
+## A. Establish the baseline
 
 ```powershell
 kubectl --context kind-prod-sim apply -f .\manifests\workload.yaml
 kubectl --context kind-prod-sim -n warfare-007 rollout status deployment/resilient-api
-kubectl --context kind-prod-sim -n warfare-007 get pods -o wide
+kubectl --context kind-prod-sim -n warfare-007 get pods -l app=resilient-api -o wide
 kubectl --context kind-prod-sim -n warfare-007 get endpointslices -l kubernetes.io/service-name=resilient-api -o yaml
+kubectl --context kind-prod-sim get nodes -L kubernetes.io/hostname
 ```
 
-**What it teaches:** `replicas: 3` requests three Pods but does not guarantee one per worker. The scheduler may happen to distribute them. A Service selects matching Pods; EndpointSlices record endpoint addresses, node names, and readiness/serving/terminating conditions.
+**Observed:** three Ready Pods on three different workers. EndpointSlice `resilient-api-c2vd4` listed three ready, serving, nonterminating addresses. See [EVIDENCE.md](EVIDENCE.md).
 
-### Actual baseline evidence (22 Nov 2026)
+**Concept:** `replicas: 3` is a desired count, not a node-spread guarantee. A Service discovers endpoints by labels; EndpointSlice readiness is a routing signal, not a promise that every request succeeds.
 
-| Pod suffix | Worker | Pod IP | Ready | Restarts |
-|---|---|---|---|---|
-| kzj8t | prod-sim-worker | 10.244.2.103 | 1/1 | 0 |
-| m6mvj | prod-sim-worker2 | 10.244.3.146 | 1/1 | 0 |
-| 77zjw | prod-sim-worker3 | 10.244.1.65 | 1/1 | 0 |
-
-The observed EndpointSlice `resilient-api-c2vd4` listed all three addresses with `ready: true`, `serving: true`, `terminating: false`, and TCP port `5678`. This is a snapshot, not a guarantee of future placement or request success.
-
-## Experiment B — Add topology spreading
-
-Keep the baseline file unchanged and apply the *separate* variant:
+## B. Reproduce the blocked rollout
 
 ```powershell
 kubectl --context kind-prod-sim apply -f .\manifests\workload-topology-spread.yaml
-kubectl --context kind-prod-sim -n warfare-007 rollout status deployment/resilient-api
-kubectl --context kind-prod-sim -n warfare-007 get pods -o wide
+kubectl --context kind-prod-sim -n warfare-007 get pods -l app=resilient-api -o wide
 kubectl --context kind-prod-sim -n warfare-007 describe deployment resilient-api
+kubectl --context kind-prod-sim -n warfare-007 describe pod <PENDING_NEW_POD_NAME>
 ```
 
-### What changed?
-
-Only the Pod template's scheduling policy:
+The initial policy (preserved for failure reproduction):
 
 ```yaml
 topologySpreadConstraints:
@@ -48,26 +51,99 @@ topologySpreadConstraints:
         app: resilient-api
 ```
 
-- `topologyKey`: eligible nodes are grouped by hostname (node).
-- `maxSkew: 1`: the scheduler must respect the permitted difference in matching Pod counts across eligible topology domains.
-- `whenUnsatisfiable: DoNotSchedule`: a Pod stays Pending if placing it would violate the spread constraint.
-- `labelSelector`: only matching `app: resilient-api` Pods are counted.
+**Observed:** three old Pods remained Ready, a fourth (new ReplicaSet) Pod remained Pending. Scheduler event:
 
-**Tradeoff:** Better distribution, but placement may be blocked when topology domains or capacity are insufficient. This is **not** a hard one-Pod-per-node rule. In a two-worker cluster, a 2+1 distribution can satisfy `maxSkew: 1`. Strict required pod anti-affinity is a different policy and has different availability/capacity tradeoffs.
+```text
+0/4 nodes are available: 1 node(s) had untolerated taint(s),
+3 node(s) didn't match pod topology spread constraints.
+```
 
-**Rolling update caveat:** The Deployment has a default rolling strategy. For three replicas, rounding means maxSurge=1 and maxUnavailable=0. During replacement, temporary extra Pods may affect placement and a new Pod may be Pending if scheduling constraints cannot be satisfied. The policy applies to *new scheduling*; it does not automatically move already-running Pods.
+For `replicas: 3`, default rolling update percentages produce **maxSurge=1** (25% rounded up) and **maxUnavailable=0** (25% rounded down). The extra Pod can be created without terminating an old healthy Pod; this does not guarantee the extra Pod can be scheduled. Availability and rollout progress are different health dimensions.
 
-## Experiment C — PodDisruptionBudget (coming next)
+## C. Root cause: default taint treatment in topology-spread calculation
 
-A PDB constrains certain **voluntary evictions**, such as a drain using the eviction API. It does **not** prevent physical node failure or guarantee immediate replacement. We will introduce it only after comparing Experiment A and B.
+The control-plane node is tainted `node-role.kubernetes.io/control-plane:NoSchedule`, and the API Pod does not tolerate it.
 
-## Staff-engineer questions
+**Crucial distinction:** omitting `nodeTaintsPolicy` defaults to **`Ignore` for topology-spread eligibility calculations**. It does *not* disable the ordinary taint-based scheduling restriction. Therefore the tainted control-plane hostname can contribute an **empty domain** to skew calculations, even though the incoming Pod cannot land there.
 
-1. Does a healthy EndpointSlice guarantee that every request succeeds?
-2. Can `replicas: 3` alone enforce one Pod per worker?
-3. How does `DoNotSchedule` trade availability for placement safety?
-4. Why can't a PDB save a Pod when its worker disappears?
+```text
+                    Control plane  Worker 1  Worker 2  Worker 3
+Matching Pods             0           1         1         1
+Try a surge Pod           0           1         2         1
+Skew = 2 - 0 = 2 > maxSkew: 1  -> rejected
+```
 
-## Evidence discipline
+Adding `nodeTaintsPolicy: Honor` means topology-spread calculations exclude nodes with taints not tolerated by the incoming Pod:
 
-Do not invent output. Add post-change observations and timings to `EVIDENCE.md` only after running the experiment. Keep baseline and variants separate for reproducibility.
+```text
+                    Control plane  Worker 1  Worker 2  Worker 3
+Spread eligible?          No         Yes       Yes       Yes
+After surge Pod           —           1         2         1
+Skew = 2 - 1 = 1 <= maxSkew: 1 -> permitted
+```
+
+This policy **does not remove node taints, add tolerations, override capacity checks, or guarantee Pod readiness**. It only changes which nodes count as eligible domains for this spread constraint.
+
+## D. Controlled diagnosis (observed)
+
+We performed two independent checks **without modifying the existing Deployment**:
+
+1. A standalone Pod using `app: resilient-api` and the original spread policy also stayed Pending with the same scheduler event. This ruled out a rollout-only explanation.
+2. A Pod with an isolated selector `app: topology-isolated` scheduled on `prod-sim-worker2`. It matched zero existing API Pods.
+3. A standalone Pod using `app: resilient-api` with the **same spread constraint plus `nodeTaintsPolicy: Honor`** scheduled and became Ready on `prod-sim-worker2` (IP `10.244.3.234`). This isolated the policy change and strongly verified the diagnosis.
+
+See [EVIDENCE.md](EVIDENCE.md). These standalone diagnostics were created locally; the experiment descriptions are recorded here so readers can reproduce them.
+
+## E. Correct the Deployment without overwriting the reproduction
+
+Keep `workload.yaml` and `workload-topology-spread.yaml` unchanged. Apply the separate corrected variant:
+
+```powershell
+# Remove diagnostic Pods first if present:
+kubectl --context kind-prod-sim -n warfare-007 delete pod topology-diagnostic topology-isolated topology-taints-honor --ignore-not-found
+
+kubectl --context kind-prod-sim apply -f .\manifests\workload-topology-spread-fixed.yaml
+kubectl --context kind-prod-sim -n warfare-007 rollout status deployment/resilient-api --timeout=120s
+kubectl --context kind-prod-sim -n warfare-007 get pods -l app=resilient-api -o wide
+kubectl --context kind-prod-sim -n warfare-007 get rs
+kubectl --context kind-prod-sim -n warfare-007 get endpointslices -l kubernetes.io/service-name=resilient-api -o yaml
+```
+
+**Expected, not yet independently evidenced in these notes:** new ReplicaSet Pods become schedulable, old Pods terminate in a controlled rolling update, and three updated Pods become Ready. Record actual output and timings before marking this verified.
+
+## F. Production tradeoffs and failure-mode analysis
+
+| Mechanism | What it helps | What it does NOT guarantee |
+|---|---|---|
+| Deployment replicas | Desired number of Pods | Even node placement or zero downtime |
+| Topology spread + `DoNotSchedule` | Enforce skew during scheduling | Capacity exists to satisfy it; rebalance running Pods |
+| `nodeTaintsPolicy: Honor` | Exclude untolerated tainted nodes from skew | All eligible nodes are Ready or have enough resources |
+| Readiness probe / EndpointSlice | Signal endpoints eligible for traffic | Instant removal after abrupt node failure or successful requests |
+| PDB | Limit voluntary evictions via Eviction API | Prevent involuntary node failure |
+| RollingUpdate `maxSurge` / `maxUnavailable` | Bound replacement concurrency and availability during rollout | Scheduler can place surge Pods |
+| Node monitoring and controllers | Detect failure and eventually replace affected Pods | Instant recovery or no interruption |
+
+**Further questions:** What if one worker disappears and the remaining two have insufficient CPU? Does `DoNotSchedule` prevent replacement? How long before the Node becomes NotReady and EndpointSlices change? Does a PDB help with a hard node shutdown? These require separate failure-injection evidence.
+
+## G. Follow-on lab — real worker failure (NOT YET VERIFIED)
+
+Only after the fixed Deployment rollout is verified and node health is checked:
+
+1. Capture baseline Pod-to-node mapping, EndpointSlices, and service responsiveness.
+2. Stop **one worker only** using Docker; record the start time and affected Pods. Do not stop the control plane.
+3. Watch Node conditions, EndpointSlices, Deployment/ReplicaSet events, and replacement Pods over time.
+4. Restore the worker and check for healthy convergence. Document any manual intervention and whether requests failed.
+5. Repeat with a PDB and a **voluntary drain** to contrast Eviction API behavior with involuntary failure.
+
+Never promise immediate rescheduling: node failure detection, taint-based eviction, capacity, and topology constraints all matter.
+
+## Staff/Principal checkpoint
+
+- Why did a 2–1–1 worker distribution fail when `maxSkew=1`?
+- Why did the isolated-label diagnostic Pod schedule?
+- How is `nodeTaintsPolicy: Honor` different from adding a toleration?
+- Why can a Deployment be Available but its rollout stuck?
+- What evidence distinguishes scheduling, endpoint routing, and actual request availability?
+- How would you alert on a rollout that has stopped progressing while old Pods remain healthy?
+
+**Status:** topology scheduling incident **investigated and fix verified with diagnostic Pod**. Full node-failure recovery mission **pending actual fault injection**.
