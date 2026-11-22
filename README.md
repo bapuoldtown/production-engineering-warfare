@@ -25,3 +25,7 @@ Open http://localhost:3000. Deploy this Next.js project to Vercel by importing t
 
 ## Instrumentation caveats
 An HTTPX client span may include multiple phases, and standard HTTPX instrumentation does not automatically isolate connection-pool wait, DNS, TCP, TLS, and response-body decoding. Use phase-specific instrumentation, client metrics, logs and profiling when needed. Nested span durations overlap; never sum them. Different hosts' clock skew can distort cross-service waterfall alignment.
+
+## Reproduce the Kubernetes production lab locally
+
+Windows/PowerShell readers can create the four-node `kind-prod-sim` training cluster with Cilium and Hubble using the [local kind setup guide](infra/kind/README.md). Start with `.\\infra\\kind\\rebuild.ps1`, then use `start.ps1` and `stop.ps1` to resume/pause. **Rebuild deletes existing lab workloads and data**; read the guide before running it. Kubernetes missions 003–005 use this shared environment; other modules may be independent.
