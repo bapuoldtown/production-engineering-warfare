@@ -1,0 +1,32 @@
+{
+  "spec": {
+    "strategy": {
+      "type": "RollingUpdate",
+      "rollingUpdate": {
+        "maxSurge": 1,
+        "maxUnavailable": 1
+      }
+    },
+    "template": {
+      "metadata": {
+        "annotations": {
+          "lab-version": "v2-broken-readiness"
+        }
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "api",
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/ready",
+                "port": 9999
+              },
+              "periodSeconds": 2
+            }
+          }
+        ]
+      }
+    }
+  }
+}
