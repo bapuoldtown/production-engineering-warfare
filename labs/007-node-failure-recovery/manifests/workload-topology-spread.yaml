@@ -1,0 +1,44 @@
+# Apply workload.yaml first to create Namespace and Service.
+# This replaces the same Deployment's Pod template; it is not a second Deployment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resilient-api
+  namespace: warfare-007
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: resilient-api
+  template:
+    metadata:
+      labels:
+        app: resilient-api
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: resilient-api
+      containers:
+        - name: api
+          image: hashicorp/http-echo:1.0
+          args:
+            - "-text=Mission 007 - Node Failure Recovery"
+            - "-listen=:5678"
+          ports:
+            - containerPort: 5678
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5678
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5678
+            periodSeconds: 10
+            failureThreshold: 3
