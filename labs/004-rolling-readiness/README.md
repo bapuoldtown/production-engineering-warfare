@@ -1,6 +1,6 @@
 # Lab 004 — Rolling Updates, Readiness and Availability Budget
 
-> Local kind cluster lab using PowerShell. **V1 readiness is verified from the learner's actual kubectl output. The V2 failure and rollback steps below are planned experiments, not yet reported as executed.**
+> Local kind cluster lab using PowerShell. **V1 readiness, broken V2 readiness, and successful corrected rollout are verified from actual kubectl output. A rollback was not performed; the rollback section is a reference procedure.**
 
 ## Objective
 
@@ -65,7 +65,7 @@ With `maxUnavailable: 0`, the Deployment should retain three available old repli
 
 If each healthy Pod can sustainably serve 500 requests/sec, three Pods provide a nominal 1500 requests/sec. Dropping to two healthy Pods leaves 1000 requests/sec. At 1400 requests/sec demand, a rollout can overload the remaining Pods **even while Kubernetes respects the declared strategy**. These are illustrative capacities, not measured lab throughput.
 
-## Step 2 — Break V2 readiness (not yet executed)
+## Step 2 — Break V2 readiness (executed and observed)
 
 **Important:** The Python server returns HTTP 200 for arbitrary paths other than `/ready`. Changing the probe to `/never-ready` would **not** break this particular app! Instead, the supplied patch targets port **9999** while the server listens on **8080**.
 
@@ -86,7 +86,7 @@ kubectl get endpointslice -n warfare-rollout-lab -l kubernetes.io/service-name=r
 
 After the 60-second progress deadline, `kubectl rollout status` may report `ProgressDeadlineExceeded`; Kubernetes does **not** automatically roll back. Avoid running `kubectl rollout status` without a timeout if waiting interactively.
 
-## Step 3 — Roll back (not yet executed)
+## Step 3 — Optional rollback procedure (not executed)
 
 ```powershell
 kubectl rollout undo deployment/rollout-api -n warfare-rollout-lab
@@ -111,3 +111,24 @@ Validate three healthy replicas, EndpointSlice readiness, zero unexpected restar
 ```powershell
 kubectl delete namespace warfare-rollout-lab
 ```
+
+## Verified V2 experiment and recovery (22 November 2026)
+
+The learner observed **three V1 Pods Ready** with **zero restarts** and **one broken V2 Pod Running but 0/1 Ready**, also with zero restarts. The broken probe pointed to port 9999, while the Python application listened on port 8080:
+
+```text
+rollout-api-6c7c457f4b-2f4qq   1/1 Running 0
+rollout-api-6c7c457f4b-7qhzs   1/1 Running 0
+rollout-api-6c7c457f4b-vmxhw   1/1 Running 0
+rollout-api-b5f4f656c-9gmtr    0/1 Running 0
+```
+
+After the learner corrected the readiness probe to port **8080** and applied a new Pod template, the actual command `kubectl rollout status deployment/rollout-api -n warfare-rollout-lab --timeout=120s` progressed through one and then two updated replicas, reported one old replica pending termination, and ended with:
+
+```text
+deployment "rollout-api" successfully rolled out
+```
+
+**What this verifies:** The original V1 Pods stayed Ready during the observed broken V2 state. After correcting readiness, Kubernetes reported successful rollout of the updated Deployment. A final `kubectl get pods` / ReplicaSet snapshot and end-to-end application HTTP traffic check were not yet supplied, so do not claim they were measured. The new template changes probe/annotation, not the HTTP application response body; this is a rollout-mechanics lab rather than proof of a new application version.
+
+**Interview checkpoint:** `maxUnavailable: 0` means the controller must preserve three **available application replicas** during the rollout, not that all Kubernetes nodes or every Pod must be Ready. With `minReadySeconds: 0` (default), a Ready Pod counts as Available immediately. This availability budget does not guarantee uninterrupted end-user requests in every possible failure mode.
