@@ -91,3 +91,10 @@ footer a{color:#087f73}
 .interactive-mission button:disabled{opacity:.5;cursor:not-allowed}
 .interactive-mission button:focus-visible{outline:3px solid #efb94f;outline-offset:3px}
 @media(max-width:720px){.mission-steps{grid-template-columns:repeat(3,1fr)}.probe-controls,.mission-compare{grid-template-columns:1fr}.mission-steps button{font-size:12px}.mission-navigation button{flex:1}}
+
+/* Mission 008.5 — explainable component flows */
+.mission-flow{display:grid;gap:8px;margin:24px 0}
+.mission-flow-step{position:relative;display:grid;grid-template-columns:48px minmax(0,1fr) 24px;align-items:center;gap:14px;padding:13px 16px;background:#f2faf6;border:1px solid #cde6db;border-radius:12px;color:#21464c}
+.mission-flow-step>span{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:#087f73;color:white;font:700 12px ui-monospace,monospace}
+.mission-flow-step strong{font-size:14px;line-height:1.5}
+.mission-flow-step>b{font-size:19px;color:#087f73;text-align:center}
