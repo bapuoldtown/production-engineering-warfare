@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rogue-client
+  namespace: warfare-008
+  labels:
+    app: rogue-client
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: prod-sim-worker
+  containers:
+    - name: client
+      image: nicolaka/netshoot:v0.13
+      command: ["sleep", "infinity"]
