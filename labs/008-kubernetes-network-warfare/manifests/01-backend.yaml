@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: network-api
+  namespace: warfare-008
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: network-api
+  template:
+    metadata:
+      labels:
+        app: network-api
+    spec:
+      containers:
+        - name: api
+          image: hashicorp/http-echo:1.0
+          args:
+            - "-text=Mission 008 - Backend Healthy"
+            - "-listen=:5678"
+          ports:
+            - name: http
+              containerPort: 5678
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
