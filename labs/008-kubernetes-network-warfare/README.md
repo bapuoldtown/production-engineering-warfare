@@ -313,3 +313,8 @@ This deletes the Mission 008 workloads, Service, and policies. Do not run it if 
 6. If Hubble returns no DROPPED events on one agent, can you conclude that no packet was dropped? Why not?
 
 Answers should be reasoned from the YAML and observed flows, not memorized.
+
+
+## Companion architecture explorer — Mission 008.5
+
+Explore the [Kubernetes Control Plane & Data Plane interactive guide](../../../../web/app/architecture/kubernetes-control-plane-data-plane/page.tsx) in the Vercel application. The editable [Excalidraw source](diagrams/kubernetes-control-plane-data-plane.excalidraw) explains the API server, etcd, controllers, scheduler, kubelet, CRI runtime, CNI/Cilium and Service datapath. The browser-rendered version includes operation-by-operation traces for apply, scale patch, image patch, rollout restart, Pod deletion and rollout undo.
