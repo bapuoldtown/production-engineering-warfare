@@ -1,6 +1,6 @@
 # Mission 008 — Kubernetes Network Warfare
 
-<badge>Completed · 24 November 2026</badge>
+**Status: COMPLETE — 24 November 2026**
 
 ## Production problem
 
